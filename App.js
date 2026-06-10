@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import {
   SafeAreaView,
@@ -40,6 +40,7 @@ export default function App() {
         deleted: false,
         history: false,
         createdAt: new Date().toISOString(),
+        updatedAt: null,
         completedAt: null,
         deletedAt: null,
       },
@@ -111,7 +112,7 @@ export default function App() {
 
     setTasks(prev =>
       prev.map(task =>
-        task.id === id ? { ...task, text: trimmed } : task
+        task.id === id ? { ...task, text: trimmed, updatedAt: new Date().toISOString() } : task
       )
     );
     cancelEditing();
@@ -181,6 +182,12 @@ export default function App() {
               )}
               {item.deletedAt && (
                 <Text style={styles.timestampText}>Deleted: {formatTime(item.deletedAt)}</Text>
+              )}
+              {item.updatedAt && (
+                <>
+                  <Text style={styles.timestampText}>Updated: {formatTime(item.updatedAt)}</Text>
+                  <Text style={styles.statusLabel}>Task updated</Text>
+                </>
               )}
               {activeView === 'History' && (
                 <Text style={styles.statusLabel}>
@@ -254,8 +261,10 @@ export default function App() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.headerRow}>
-        <TouchableOpacity style={styles.menuButton} onPress={() => setMenuOpen(true)}>
-          <Text style={styles.menuButtonText}>☰</Text>
+        <TouchableOpacity style={styles.menuButton} onPress={() => setMenuOpen(prev => !prev)}>
+          <View style={styles.bar} />
+          <View style={styles.bar} />
+          <View style={styles.bar} />
         </TouchableOpacity>
         <Text style={styles.title}>TODOIST</Text>
       </View>
@@ -399,6 +408,13 @@ const styles = StyleSheet.create({
   menuButtonText: {
     fontSize: 24,
     color: '#ffa500',
+  },
+  bar: {
+    width: 20,
+    height: 2,
+    backgroundColor: '#ffa500',
+    marginVertical: 2,
+    borderRadius: 1,
   },
   drawer: {
     position: 'absolute',
@@ -656,3 +672,6 @@ const styles = StyleSheet.create({
     color: '#101010',
   },
 });
+
+
+
