@@ -1,3 +1,13 @@
 {
-    "git.enabled": true
+    "git.enabled": true,
+    "files.exclude": {
+        "**/node_modules": true,
+        "**/web-build": true
+    },
+    "search.exclude": {
+        "**/node_modules": true,
+        "**/web-build": true
+    },
+    "typescript.disableAutomaticTypeAcquisition": true,
+    "typescript.tsdk": null
 }

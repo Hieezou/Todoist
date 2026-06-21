@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Expo Start (LAN)",
+      "type": "shell",
+      "command": "npm run start",
+      "problemMatcher": []
+    },
+    {
+      "label": "Expo Start (Localhost)",
+      "type": "shell",
+      "command": "npm run start:localhost",
+      "problemMatcher": []
+    },
+    {
+      "label": "Expo Build Web",
+      "type": "shell",
+      "command": "npm run build:web",
+      "problemMatcher": []
+    },
+    {
+      "label": "Firebase Deploy",
+      "type": "shell",
+      "command": "npm run deploy:web",
+      "problemMatcher": []
+    }
+  ]
+}

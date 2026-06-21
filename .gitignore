@@ -5,3 +5,4 @@ web-build/
 .DS_Store
 npm-debug.log
 .firebase/
+firebaseConfig.js
