@@ -1,149 +1,359 @@
-﻿import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import {
   SafeAreaView,
   View,
   Text,
-  TextInput,
-  TouchableOpacity,
-  FlatList,
+  KeyboardAvoidingView,
+  TouchableWithoutFeedback,
+  Keyboard,
   StyleSheet,
   Platform,
+  TouchableOpacity,
+  Alert,
 } from 'react-native';
+import * as FileSystem from 'expo-file-system';
+import { impact, notification } from './utils/haptics';
+import { HapticsProvider, useHaptics } from './utils/HapticsProvider';
+import { cloudEnabled } from './firebaseConfig';
+import TaskItem from './components/TaskItem';
+import TaskInput from './components/TaskInput';
+import SummaryCards from './components/SummaryCards';
+import TaskList from './components/TaskList';
 
+const STORAGE_FILE = FileSystem.documentDirectory + 'todoist_tasks.json';
+const USER_ID_FILE = FileSystem.documentDirectory + 'todoist_user_id.txt';
 const views = ['Tasks', 'Completed', 'History', 'Task Bin'];
+// Sorting is handled internally; UI sort controls removed for simpler UX
 
 export default function App() {
   const [taskText, setTaskText] = useState('');
   const [tasks, setTasks] = useState([]);
   const [activeView, setActiveView] = useState('Tasks');
-  const [menuOpen, setMenuOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [editingTaskId, setEditingTaskId] = useState(null);
   const [editingText, setEditingText] = useState('');
+  const [userId, setUserId] = useState(null);
+  const [cloudError, setCloudError] = useState(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  // removed sort UI state to simplify interface
+  const cloudServiceRef = useRef(null);
 
-  const formatTime = timestamp => {
-    if (!timestamp) return '';
-    const date = new Date(timestamp);
-    return date.toLocaleString();
-  };
+  // File system utilities
+  const readFileJson = useCallback(async (path) => {
+    try {
+      const info = await FileSystem.getInfoAsync(path);
+      if (!info.exists) return null;
+      const contents = await FileSystem.readAsStringAsync(path, {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
+      return contents ? JSON.parse(contents) : null;
+    } catch (error) {
+      console.error(`Error reading file ${path}:`, error);
+      throw error;
+    }
+  }, []);
 
-  const addTask = () => {
+  const writeFileJson = useCallback(async (path, value) => {
+    try {
+      await FileSystem.writeAsStringAsync(path, JSON.stringify(value), {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
+    } catch (error) {
+      console.error(`Error writing file ${path}:`, error);
+      throw error;
+    }
+  }, []);
+
+  // Cloud service initialization
+  const getCloudService = useCallback(async () => {
+    if (!cloudEnabled) return null;
+    if (cloudServiceRef.current) return cloudServiceRef.current;
+    try {
+      const service = await import('./firebaseService');
+      cloudServiceRef.current = service;
+      return service;
+    } catch (error) {
+      console.error('Unable to load cloud service:', error);
+      setCloudError('Cloud unavailable - using local storage');
+      return null;
+    }
+  }, []);
+
+  // Initialize tasks on app load
+  useEffect(() => {
+    const initTasks = async () => {
+      try {
+        let id = null;
+        const idInfo = await FileSystem.getInfoAsync(USER_ID_FILE);
+        if (idInfo.exists) {
+          id = await FileSystem.readAsStringAsync(USER_ID_FILE, {
+            encoding: FileSystem.EncodingType.UTF8,
+          });
+        }
+        if (!id) {
+          id = `${Date.now()}-${Math.random()}`;
+          await FileSystem.writeAsStringAsync(USER_ID_FILE, id, {
+            encoding: FileSystem.EncodingType.UTF8,
+          });
+        }
+        setUserId(id);
+
+        const localTasks = (await readFileJson(STORAGE_FILE)) || [];
+        if (cloudEnabled) {
+          try {
+            const service = await getCloudService();
+            if (service) {
+              const cloudTasks = await service.getUserTasks(id);
+              if (cloudTasks && cloudTasks.length > 0) {
+                setTasks(cloudTasks);
+                return;
+              }
+            }
+          } catch (error) {
+            console.warn('Cloud sync failed, using local tasks:', error.message);
+          }
+        }
+        setTasks(localTasks);
+      } catch (error) {
+        setCloudError('Failed to initialize: ' + error.message);
+        console.error('Init error:', error);
+      }
+    };
+    initTasks();
+  }, [readFileJson, getCloudService]);
+
+  // Auto-save to local storage
+  useEffect(() => {
+    const saveLocal = async () => {
+      try {
+        await writeFileJson(STORAGE_FILE, tasks);
+      } catch (error) {
+        console.error('Failed to save tasks:', error);
+      }
+    };
+    if (tasks.length > 0 || !cloudEnabled) {
+      saveLocal();
+    }
+  }, [tasks, writeFileJson]);
+
+  // Cloud sync helpers
+  const saveTaskCloud = useCallback(async (task) => {
+    if (!userId || !cloudEnabled) return;
+    try {
+      const service = await getCloudService();
+      if (!service) return;
+      await service.saveTaskToCloud(userId, task);
+      setCloudError(null);
+    } catch (error) {
+      console.error('Cloud save failed:', error);
+      setCloudError('Sync failed (will retry)');
+    }
+  }, [userId, getCloudService]);
+
+  const removeTaskCloud = useCallback(async (id) => {
+    if (!userId || !cloudEnabled) return;
+    try {
+      const service = await getCloudService();
+      if (!service) return;
+      await service.deleteTaskFromCloud(id);
+      setCloudError(null);
+    } catch (error) {
+      console.error('Cloud delete failed:', error);
+      setCloudError('Sync failed (will retry)');
+    }
+  }, [userId, getCloudService]);
+
+  // Pull-to-refresh handler
+  const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      if (cloudEnabled && userId) {
+        const service = await getCloudService();
+        if (service) {
+          const cloudTasks = await service.getUserTasks(userId);
+          if (cloudTasks && cloudTasks.length > 0) {
+            setTasks(cloudTasks);
+            await notification();
+            setCloudError(null);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Refresh failed:', error);
+      setCloudError('Refresh failed: ' + error.message);
+      await notification();
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [userId, getCloudService]);
+
+  // Task operations with haptic feedback
+  const addTask = useCallback(async () => {
     const trimmed = taskText.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      await notification();
+      return;
+    }
 
-    setTasks(prev => [
-      {
-        id: `${Date.now()}-${Math.random()}`,
-        text: trimmed,
-        completed: false,
-        deleted: false,
-        history: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: null,
-        completedAt: null,
-        deletedAt: null,
-      },
-      ...prev,
-    ]);
+    await impact();
 
+    const newTask = {
+      id: `${Date.now()}-${Math.random()}`,
+      text: trimmed,
+      completed: false,
+      deleted: false,
+      history: false,
+      dueDate: null,
+      priority: 'medium',
+      createdAt: new Date().toISOString(),
+      updatedAt: null,
+      completedAt: null,
+      deletedAt: null,
+    };
+
+    setTasks(prev => [newTask, ...prev]);
     setTaskText('');
-  };
+    await saveTaskCloud(newTask);
+  }, [taskText, saveTaskCloud]);
 
-  const completeTask = id => {
-    setTasks(prev =>
-      prev.map(task =>
-        task.id === id
-          ? {
-              ...task,
-              completed: true,
-              deleted: false,
-              history: true,
-              completedAt: new Date().toISOString(),
-              deletedAt: null,
-            }
-          : task
-      )
+  const completeTask = useCallback((id) => {
+    const taskToUpdate = tasks.find(task => task.id === id);
+    if (!taskToUpdate) return;
+
+    const updatedTask = {
+      ...taskToUpdate,
+      completed: true,
+      deleted: false,
+      history: true,
+      completedAt: new Date().toISOString(),
+      deletedAt: null,
+    };
+
+    setTasks(prev => prev.map(task => (task.id === id ? updatedTask : task)));
+    saveTaskCloud(updatedTask);
+  }, [tasks, saveTaskCloud]);
+
+  const deleteToBin = useCallback((id) => {
+    const taskToUpdate = tasks.find(task => task.id === id);
+    if (!taskToUpdate) return;
+
+    const updatedTask = {
+      ...taskToUpdate,
+      deleted: true,
+      history: true,
+      deletedAt: new Date().toISOString(),
+    };
+
+    setTasks(prev => prev.map(task => (task.id === id ? updatedTask : task)));
+    saveTaskCloud(updatedTask);
+  }, [tasks, saveTaskCloud]);
+
+  const restoreFromBin = useCallback((id) => {
+    const taskToUpdate = tasks.find(task => task.id === id);
+    if (!taskToUpdate) return;
+
+    const updatedTask = {
+      ...taskToUpdate,
+      deleted: false,
+      history: true,
+      deletedAt: null,
+    };
+
+    setTasks(prev => prev.map(task => (task.id === id ? updatedTask : task)));
+    saveTaskCloud(updatedTask);
+  }, [tasks, saveTaskCloud]);
+
+  const permanentlyDeleteTask = useCallback((id) => {
+    Alert.alert(
+      'Delete Permanently?',
+      'This action cannot be undone.',
+      [
+        { text: 'Cancel', onPress: () => {}, style: 'cancel' },
+        {
+          text: 'Delete',
+          onPress: async () => {
+              await impact();
+            setTasks(prev => prev.filter(task => task.id !== id));
+            await removeTaskCloud(id);
+          },
+          style: 'destructive',
+        },
+      ]
     );
-  };
+  }, [removeTaskCloud]);
 
-  const restoreFromBin = id => {
-    setTasks(prev =>
-      prev.map(task =>
-        task.id === id
-          ? { ...task, deleted: false, history: true, deletedAt: null }
-          : task
-      )
-    );
-  };
-
-  const deleteToBin = id => {
-    setTasks(prev =>
-      prev.map(task =>
-        task.id === id
-          ? {
-              ...task,
-              deleted: true,
-              history: true,
-              deletedAt: new Date().toISOString(),
-            }
-          : task
-      )
-    );
-  };
-
-  const permanentlyDeleteTask = id => {
-    setTasks(prev => prev.filter(task => task.id !== id));
-  };
-
-  const startEditingTask = (id, text) => {
+  const startEditingTask = useCallback((id, text) => {
     setEditingTaskId(id);
     setEditingText(text);
-  };
+  }, []);
 
-  const cancelEditing = () => {
+  const cancelEditing = useCallback(() => {
     setEditingTaskId(null);
     setEditingText('');
-  };
+  }, []);
 
-  const saveTaskEdit = id => {
+  const saveTaskEdit = useCallback((id) => {
     const trimmed = editingText.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      Alert.alert('Error', 'Task text cannot be empty');
+      return;
+    }
 
-    setTasks(prev =>
-      prev.map(task =>
-        task.id === id ? { ...task, text: trimmed, updatedAt: new Date().toISOString() } : task
-      )
-    );
+    const taskToUpdate = tasks.find(task => task.id === id);
+    if (!taskToUpdate) return;
+
+    const updatedTask = {
+      ...taskToUpdate,
+      text: trimmed,
+      updatedAt: new Date().toISOString(),
+    };
+
+    setTasks(prev => prev.map(task => (task.id === id ? updatedTask : task)));
+    saveTaskCloud(updatedTask);
     cancelEditing();
-  };
+  }, [editingText, tasks, saveTaskCloud, cancelEditing]);
 
-  const activeTasks = tasks.filter(task => !task.completed && !task.deleted);
-  const completedTasks = tasks.filter(task => task.completed && !task.deleted);
-  const historyTasks = tasks.filter(task => task.history || task.deleted);
-  const binTasks = tasks.filter(task => task.deleted);
+  // Computed values with memoization
+  const { activeTasks, completedTasks, historyTasks, binTasks } = useMemo(() => ({
+    activeTasks: tasks.filter(task => !task.completed && !task.deleted),
+    completedTasks: tasks.filter(task => task.completed && !task.deleted),
+    historyTasks: tasks.filter(task => task.history || task.deleted),
+    binTasks: tasks.filter(task => task.deleted),
+  }), [tasks]);
 
-  const viewCounts = {
+  const viewCounts = useMemo(() => ({
     Tasks: activeTasks.length,
     Completed: completedTasks.length,
     History: historyTasks.length,
     'Task Bin': binTasks.length,
-  };
+  }), [activeTasks, completedTasks, historyTasks, binTasks]);
 
-  const getViewTasks = () => {
+  const sortTasks = useCallback((taskList) => {
+    const sorted = [...taskList];
+    // Default sorting: most recent first (by createdAt / updatedAt / completedAt)
+    return sorted.sort((a, b) => {
+      const aTime = new Date(a.createdAt || a.updatedAt || a.completedAt || 0).getTime();
+      const bTime = new Date(b.createdAt || b.updatedAt || b.completedAt || 0).getTime();
+      return bTime - aTime;
+    });
+  }, []);
+
+  const getViewTasks = useCallback(() => {
     switch (activeView) {
       case 'Completed':
-        return completedTasks;
+        return sortTasks(completedTasks);
       case 'History':
-        return historyTasks;
+        return sortTasks(historyTasks);
       case 'Task Bin':
-        return binTasks;
+        return sortTasks(binTasks);
       default:
-        return activeTasks;
+        return sortTasks(activeTasks);
     }
-  };
+  }, [activeView, activeTasks, completedTasks, historyTasks, binTasks, sortTasks]);
 
-  const getViewTitle = () => {
+  const getViewTitle = useCallback(() => {
     switch (activeView) {
       case 'Completed':
         return 'Completed Tasks';
@@ -154,524 +364,229 @@ export default function App() {
       default:
         return 'Active Tasks';
     }
-  };
-
-  const renderTask = ({ item }) => {
-    const isEditing = editingTaskId === item.id;
-    return (
-      <View style={[styles.taskItem, item.completed && styles.taskCompleted, item.deleted && styles.taskDeleted]}>
-        <View style={styles.taskButton}>
-          {isEditing ? (
-            <TextInput
-              value={editingText}
-              onChangeText={setEditingText}
-              style={[styles.input, styles.editInput]}
-              placeholder="Update task"
-              placeholderTextColor="#8c8c8c"
-              returnKeyType="done"
-              onSubmitEditing={() => saveTaskEdit(item.id)}
-            />
-          ) : (
-            <>
-              <Text style={[styles.taskText, item.completed && styles.taskTextCompleted, item.deleted && styles.taskTextDeleted]}>
-                {item.text}
-              </Text>
-              <Text style={styles.timestampText}>Added: {formatTime(item.createdAt)}</Text>
-              {item.completedAt && (
-                <Text style={styles.timestampText}>Completed: {formatTime(item.completedAt)}</Text>
-              )}
-              {item.deletedAt && (
-                <Text style={styles.timestampText}>Deleted: {formatTime(item.deletedAt)}</Text>
-              )}
-              {item.updatedAt && (
-                <>
-                  <Text style={styles.timestampText}>Updated: {formatTime(item.updatedAt)}</Text>
-                  <Text style={styles.statusLabel}>Task updated</Text>
-                </>
-              )}
-              {activeView === 'History' && (
-                <Text style={styles.statusLabel}>
-                  {item.deleted ? 'Deleted' : item.completed ? 'Nayswan Goodjob!!' : 'Unsuccessful'}
-                </Text>
-              )}
-            </>
-          )}
-        </View>
-
-        <View style={styles.actionRow}>
-          {activeView === 'History' ? null : item.deleted ? (
-            <>
-              <TouchableOpacity onPress={() => restoreFromBin(item.id)} style={styles.restoreButton}>
-                <Text style={styles.restoreText}>Restore</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => permanentlyDeleteTask(item.id)} style={styles.deleteButton}>
-                <Text style={styles.deleteText}>Delete</Text>
-              </TouchableOpacity>
-            </>
-          ) : isEditing ? (
-            <>
-              <TouchableOpacity onPress={() => saveTaskEdit(item.id)} style={styles.completeButton}>
-                <Text style={styles.completeText}>Save</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={cancelEditing} style={styles.archiveButton}>
-                <Text style={styles.archiveText}>Cancel</Text>
-              </TouchableOpacity>
-            </>
-          ) : item.completed ? (
-            <TouchableOpacity onPress={() => deleteToBin(item.id)} style={styles.archiveButton}>
-              <Text style={styles.archiveText}>Delete</Text>
-            </TouchableOpacity>
-          ) : (
-            <>
-              <TouchableOpacity onPress={() => startEditingTask(item.id, item.text)} style={styles.editButton}>
-                <Text style={styles.editText}>Update</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => completeTask(item.id)} style={styles.completeButton}>
-                <Text style={styles.completeText}>Complete</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => deleteToBin(item.id)} style={styles.archiveButton}>
-                <Text style={styles.archiveText}>Delete</Text>
-              </TouchableOpacity>
-            </>
-          )}
-        </View>
-      </View>
-    );
-  };
-
-  const currentTasks = getViewTasks();
-  const pageSize = 10;
-  const totalPages = Math.max(1, Math.ceil(currentTasks.length / pageSize));
-  const pageGroupStart = Math.floor((page - 1) / 10) * 10 + 1;
-  const pageGroupEnd = Math.min(totalPages, pageGroupStart + 9);
-  const pageNumbers = Array.from({ length: pageGroupEnd - pageGroupStart + 1 }, (_, i) => pageGroupStart + i);
-  const paginatedTasks = currentTasks.slice((page - 1) * pageSize, page * pageSize);
-
-  useEffect(() => {
-    setPage(1);
-    cancelEditing();
   }, [activeView]);
 
+  const formatTime = useCallback((timestamp) => {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    return date.toLocaleString();
+  }, []);
+
+  const renderTask = useCallback(({ item }) => (
+    <TaskItem
+      item={item}
+      isEditing={editingTaskId === item.id}
+      editingText={editingText}
+      onEditChange={setEditingText}
+      onEditSave={saveTaskEdit}
+      onEditCancel={cancelEditing}
+      onStartEdit={startEditingTask}
+      onComplete={completeTask}
+      onDelete={deleteToBin}
+      onRestore={restoreFromBin}
+      onPermanentDelete={permanentlyDeleteTask}
+      activeView={activeView}
+      formatTime={formatTime}
+    />
+  ), [editingTaskId, editingText, activeView, saveTaskEdit, cancelEditing, startEditingTask, completeTask, deleteToBin, restoreFromBin, permanentlyDeleteTask, formatTime]);
+
+  const currentTasks = getViewTasks();
+
+  const PAGE_SIZE = 10;
+
+  // Clamp page when the available tasks change so we never point past the last page
   useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil((currentTasks.length || 0) / PAGE_SIZE));
     if (page > totalPages) {
       setPage(totalPages);
     }
-  }, [page, totalPages]);
+  }, [currentTasks, page]);
+
+  // Reset pagination when view changes
+  useEffect(() => {
+    setPage(1);
+    cancelEditing();
+  }, [activeView, cancelEditing]);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener('keyboardDidShow', () => setKeyboardVisible(true));
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.headerRow}>
-        <TouchableOpacity style={styles.menuButton} onPress={() => setMenuOpen(prev => !prev)}>
-          <View style={styles.bar} />
-          <View style={styles.bar} />
-          <View style={styles.bar} />
-        </TouchableOpacity>
-        <Text style={styles.title}>TODOIST</Text>
-      </View>
+    <KeyboardAvoidingView
+      style={styles.keyboardAvoiding}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 70 : 0}
+    >
+      <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+        <HapticsProvider>
+          <SafeAreaView style={styles.container}>
+            <HapticsFallbackBanner />
+            <View style={styles.headerRow}>
+              <LogoHeader />
+            </View>
 
-      <View style={styles.content}>
-        <View style={styles.inputRow}>
-          <TextInput
-            style={styles.input}
-            placeholder="Add a new task"
-            value={taskText}
-            onChangeText={setTaskText}
-            onSubmitEditing={addTask}
-            returnKeyType="done"
-          />
-          <TouchableOpacity style={styles.addButton} onPress={addTask}>
-            <Text style={styles.addButtonText}>Add</Text>
-          </TouchableOpacity>
-        </View>
+            {cloudError && <Text style={styles.cloudError}>{cloudError}</Text>}
 
-        <Text style={styles.sectionTitle}>{getViewTitle()}</Text>
+            <View style={styles.content}>
+            <SummaryCards
+              views={views}
+              viewCounts={viewCounts}
+              activeView={activeView}
+              onViewChange={setActiveView}
+            />
 
-        <FlatList
-          data={paginatedTasks}
-          keyExtractor={item => item.id}
-          renderItem={renderTask}
-          contentContainerStyle={styles.taskList}
-          ListEmptyComponent={<Text style={styles.emptyText}>No tasks in this view.</Text>}
-        />
+            <TaskInput
+              taskText={taskText}
+              onTaskTextChange={setTaskText}
+              onAddTask={addTask}
+            />
 
-        <View style={styles.paginationRow}>
-          <TouchableOpacity
-            disabled={page === 1}
-            style={[styles.pageButton, page === 1 && styles.pageButtonDisabled]}
-            onPress={() => setPage(prev => Math.max(1, prev - 1))}
-          >
-            <Text style={styles.pageButtonText}>Prev</Text>
-          </TouchableOpacity>
-          {pageNumbers.map(number => (
-            <TouchableOpacity
-              key={number}
-              style={[styles.pageButton, page === number && styles.pageButtonActive]}
-              onPress={() => setPage(number)}
-            >
-              <Text style={[styles.pageButtonText, page === number && styles.pageButtonTextActive]}>
-                {number}
-              </Text>
-            </TouchableOpacity>
-          ))}
-          <TouchableOpacity
-            disabled={page === totalPages}
-            style={[styles.pageButton, page === totalPages && styles.pageButtonDisabled]}
-            onPress={() => setPage(prev => Math.min(totalPages, prev + 1))}
-          >
-            <Text style={styles.pageButtonText}>Next</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+            {/* Sort controls removed — using default sorting for simplicity */}
 
-      {menuOpen && (
-        <>
-          <TouchableOpacity style={styles.menuOverlay} onPress={() => setMenuOpen(false)} />
-          <View style={styles.drawer}>
-            <Text style={styles.drawerTitle}>Menu</Text>
-            {views.map(view => (
-              <TouchableOpacity
-                key={view}
-                style={[styles.drawerButton, activeView === view && styles.drawerButtonActive]}
-                onPress={() => {
-                  setActiveView(view);
-                  setMenuOpen(false);
-                }}
-              >
-                <Text style={[styles.drawerButtonText, activeView === view && styles.drawerButtonTextActive]}>
-                  {view}
-                </Text>
-                <Text style={[styles.drawerCount, activeView === view && styles.drawerCountActive]}>
-                  {viewCounts[view]}
-                </Text>
-              </TouchableOpacity>
-            ))}
+            <Text style={styles.sectionTitle}>{getViewTitle()}</Text>
+
+            <TaskList
+              tasks={currentTasks}
+              onRefresh={handleRefresh}
+              isRefreshing={isRefreshing}
+              renderTask={renderTask}
+              pageSize={PAGE_SIZE}
+              page={page}
+              onPageChange={setPage}
+              fixedPager={true}
+              hidePager={keyboardVisible}
+              activeView={activeView}
+            />
           </View>
-        </>
-      )}
 
-      <StatusBar style={Platform.OS === 'ios' ? 'dark' : 'auto'} />
-    </SafeAreaView>
+            <StatusBar style="auto" />
+          </SafeAreaView>
+        </HapticsProvider>
+      </TouchableWithoutFeedback>
+    </KeyboardAvoidingView>
+  );
+}
+
+function LogoHeader() {
+  return (
+    <View style={styles.logoContainer}>
+      <Text style={styles.logoText}>TODO</Text>
+      <View style={styles.logoBlock}>
+        <Text style={styles.logoBlockText}>IST</Text>
+      </View>
+    </View>
+  );
+}
+
+function HapticsFallbackBanner() {
+  const { available } = useHaptics();
+  if (available) return null;
+  return (
+    <View style={{ backgroundColor: '#fff3cd', padding: 8 }}>
+      <Text style={{ color: '#856404', textAlign: 'center' }}>
+        Haptics unavailable — using visual feedback instead.
+      </Text>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#101010',
-    paddingHorizontal: 16,
+    backgroundColor: '#070b17',
+    paddingHorizontal: 20,
     paddingTop: 40,
   },
-  title: {
-    flex: 1,
+  logoContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 24,
+  },
+  logoText: {
+    color: '#ffffff',
     fontSize: 32,
     fontWeight: 'bold',
-    marginBottom: 24,
-    color: '#ffa500',
-    textAlign: 'center',
+    letterSpacing: 0.5,
   },
-  mainRow: {
-    flex: 1,
-    flexDirection: 'row',
+  logoBlock: {
+    marginLeft: 8,
+    backgroundColor: '#ffa500',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
   },
-  sidebar: {
-    width: 110,
-    backgroundColor: '#181818',
-    borderRadius: 20,
-    paddingVertical: 16,
-    paddingHorizontal: 10,
-    marginRight: 14,
-    shadowColor: '#000',
-    shadowOpacity: 0.2,
-    shadowOffset: { width: 0, height: 6 },
-    shadowRadius: 16,
-    elevation: 6,
+  logoBlockText: {
+    color: '#101010',
+    fontWeight: 'bold',
+    fontSize: 32,
+    letterSpacing: 0.5,
   },
   headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 18,
   },
-  menuButton: {
-    width: 45,
-    height: 45,
-    borderRadius: 12,
-    backgroundColor: '#1f1f1f',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.16,
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 12,
-    elevation: 4,
+  headerTextWrapper: {
+    flex: 1,
   },
-  menuButtonText: {
-    fontSize: 24,
-    color: '#ffa500',
-  },
-  bar: {
-    width: 20,
-    height: 2,
-    backgroundColor: '#ffa500',
-    marginVertical: 2,
-    borderRadius: 1,
-  },
-  drawer: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: 240,
-    backgroundColor: '#121212',
-    paddingTop: 60,
-    paddingHorizontal: 16,
-    shadowColor: '#000',
-    shadowOpacity: 0.25,
-    shadowOffset: { width: 4, height: 0 },
-    shadowRadius: 20,
-    elevation: 12,
-    zIndex: 20,
-  },
-  drawerTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    marginBottom: 24,
-    color: '#ffa500',
-  },
-  drawerButton: {
-    borderRadius: 14,
-    paddingVertical: 14,
-    paddingHorizontal: 10,
-    marginBottom: 12,
-    backgroundColor: '#1f1f1f',
-  },
-  drawerButtonActive: {
-    backgroundColor: '#ff8c00',
-  },
-  drawerButtonText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#f5f5f5',
-  },
-  drawerButtonTextActive: {
-    color: '#101010',
-  },
-  drawerCount: {
+  subtitle: {
+    color: '#9ca3af',
+    fontSize: 13,
     marginTop: 4,
-    fontSize: 12,
-    color: '#d9d9d9',
-  },
-  drawerCountActive: {
-    color: '#101010',
-  },
-  menuOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    zIndex: 10,
+    lineHeight: 18,
   },
   content: {
     flex: 1,
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  input: {
-    flex: 1,
-    backgroundColor: '#1f1f1f',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    fontSize: 16,
-    color: '#ffffff',
-    shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  editInput: {
-    flex: 1,
-    minWidth: 180,
-    backgroundColor: '#1f1f1f',
-    color: '#ffffff',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#444444',
-  },
-  addButton: {
-    marginLeft: 12,
-    backgroundColor: '#ff8c00',
-    paddingHorizontal: 18,
-    paddingVertical: 12,
-    borderRadius: 12,
-  },
-  addButtonText: {
-    color: '#101010',
-    fontWeight: '700',
-  },
-  taskList: {
-    paddingBottom: 40,
-  },
-  taskItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 16,
-    borderRadius: 16,
-    backgroundColor: '#181818',
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  taskCompleted: {
-    borderColor: '#ffa500',
-    borderWidth: 1,
-  },
-  taskButton: {
-    flex: 1,
-  },
-  taskText: {
-    fontSize: 16,
-    color: '#eeeeee',
-  },
-  taskTextCompleted: {
-    textDecorationLine: 'line-through',
-    color: '#d6d6d6',
-  },
-  taskDeleted: {
-    backgroundColor: '#2a1a14',
-  },
-  taskTextDeleted: {
-    color: '#ffb347',
-  },
-  timestampText: {
-    marginTop: 4,
-    fontSize: 12,
-    color: '#c0c0c0',
-  },
-  statusLabel: {
-    marginTop: 6,
-    fontSize: 12,
-    color: '#ffb347',
-  },
-  actionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  completeButton: {
-    marginLeft: 12,
-    backgroundColor: '#ff8c00',
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  completeText: {
-    color: '#101010',
-    fontWeight: '700',
-  },
-  editButton: {
-    marginLeft: 12,
-    backgroundColor: '#f5a623',
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  editText: {
-    color: '#101010',
-    fontWeight: '700',
-  },
-  archiveButton: {
-    marginLeft: 12,
-    backgroundColor: '#ff6200',
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  archiveText: {
-    color: '#101010',
-    fontWeight: '700',
-  },
-  restoreButton: {
-    marginLeft: 12,
-    backgroundColor: '#3f3f3f',
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  restoreText: {
-    color: '#ffffff',
-    fontWeight: '600',
-  },
-  deleteButton: {
-    marginLeft: 12,
-    backgroundColor: '#c75000',
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  deleteText: {
-    color: '#ffffff',
-    fontWeight: '600',
   },
   sectionTitle: {
     fontSize: 20,
     fontWeight: '700',
     marginBottom: 12,
-    color: '#ffffff',
+    color: '#e2e8f0',
   },
-  emptyText: {
-    color: '#c0c0c0',
-    textAlign: 'center',
-    marginTop: 16,
-    fontSize: 16,
-  },
-  paginationRow: {
+  sortRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 6,
-    backgroundColor: '#121212',
-    borderTopWidth: 1,
-    borderTopColor: '#2a2a2a',
-    marginTop: 10,
+    marginBottom: 14,
+    paddingHorizontal: 8,
   },
-  pageButton: {
-    minWidth: 40,
-    paddingVertical: 8,
+  sortLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#9ca3af',
+    marginRight: 8,
+  },
+  sortButton: {
+    paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: 10,
-    backgroundColor: '#1f1f1f',
-    marginHorizontal: 4,
-    marginVertical: 4,
-    alignItems: 'center',
+    backgroundColor: '#1f2937',
+    marginRight: 6,
   },
-  pageButtonActive: {
-    backgroundColor: '#ff8c00',
+  sortButtonActive: {
+    backgroundColor: '#38bdf8',
   },
-  pageButtonDisabled: {
-    backgroundColor: '#2a2a2a',
-  },
-  pageButtonText: {
-    color: '#ffffff',
+  sortButtonText: {
+    fontSize: 11,
     fontWeight: '600',
+    color: '#9ca3af',
   },
-  pageButtonTextActive: {
+  sortButtonTextActive: {
     color: '#101010',
   },
+  cloudError: {
+    marginBottom: 8,
+    fontSize: 12,
+    color: '#f87171',
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+  keyboardAvoiding: {
+    flex: 1,
+  },
 });
-
-
-
