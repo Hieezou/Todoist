@@ -4,11 +4,38 @@
     "slug": "todoist",
     "version": "1.0.0",
     "sdkVersion": "49.0.0",
-    "platforms": ["ios", "android", "web"],
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
     "orientation": "portrait",
     "updates": {
-      "fallbackToCacheTimeout": 0
+      "fallbackToCacheTimeout": 0,
+      "url": "https://u.expo.dev/77ab067c-f7d1-4998-bf96-6ed76c5dbc12"
     },
-    "assetBundlePatterns": ["**/*"]
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#000000"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "77ab067c-f7d1-4998-bf96-6ed76c5dbc12"
+      }
+    },
+    "android": {
+      "package": "com.hieezou.todoist",
+      "runtimeVersion": "1.0.0"
+    },
+    "ios": {
+      "runtimeVersion": {
+        "policy": "appVersion"
+      }
+    }
   }
 }
