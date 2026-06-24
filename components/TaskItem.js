@@ -49,7 +49,7 @@ const TaskItem = memo(({
             value={editingText}
             onChangeText={onEditChange}
             style={[styles.input, styles.editInput]}
-            placeholder="Update task"
+            placeholder="Update assignment"
             placeholderTextColor="#8c8c8c"
             returnKeyType="done"
             onSubmitEditing={() => onEditSave(item.id)}
@@ -70,47 +70,49 @@ const TaskItem = memo(({
             </View>
             {item.updatedAt ? <Text style={styles.timestampText}>Updated: {formatTime(item.updatedAt)}</Text> : null}
             {(item.deleted || item.completed) && (
-              <Text style={styles.statusLabel}>
-                {item.deleted ? 'Deleted' : 'Completed'}
-              </Text>
+              <View style={[styles.statusLabel, item.deleted ? styles.deletedStatusLabel : styles.completedStatusLabel]}>
+                <Text style={[styles.statusLabelText, item.deleted ? styles.deletedStatusLabelText : styles.completedStatusLabelText]}>
+                  {item.deleted ? 'Deleted' : '✔ Completed'}
+                </Text>
+              </View>
             )}
           </>
         )}
       </View>
 
-      <View style={styles.actionRow}>
+      <View style={styles.actionColumn}>
         {activeView === 'History' ? null : item.deleted ? (
           <>
-            <TouchableOpacity onPress={handleRestore} style={styles.restoreButton}>
-              <Text style={styles.restoreText}>Restore</Text>
+            <TouchableOpacity onPress={handleRestore} style={[styles.actionButton, styles.restoreButton]}>
+              <Text style={[styles.restoreText, styles.actionText]}>Restore</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={handlePermanentDelete} style={styles.deleteButton}>
-              <Text style={styles.deleteText}>Delete</Text>
+            <TouchableOpacity onPress={handlePermanentDelete} style={[styles.actionButton, styles.deleteButton]}>
+              <Text style={[styles.deleteText, styles.actionText]}>Delete</Text>
             </TouchableOpacity>
           </>
         ) : isEditing ? (
           <>
-            <TouchableOpacity onPress={() => onEditSave(item.id)} style={styles.completeButton}>
-              <Text style={styles.completeText}>Save</Text>
+            <TouchableOpacity onPress={() => onEditSave(item.id)} style={[styles.actionButton, styles.completeButton]}>
+              <Text style={[styles.completeText, styles.actionText]}>Save</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={onEditCancel} style={styles.archiveButton}>
-              <Text style={styles.archiveText}>Cancel</Text>
+            <TouchableOpacity onPress={onEditCancel} style={[styles.actionButton, styles.archiveButton]}>
+              <Text style={[styles.archiveText, styles.actionText]}>Cancel</Text>
             </TouchableOpacity>
           </>
         ) : item.completed ? (
-          <TouchableOpacity onPress={handleDelete} style={styles.archiveButton}>
-            <Text style={styles.archiveText}>Delete</Text>
+          <TouchableOpacity onPress={handleDelete} style={[styles.actionButton, styles.archiveButton]}>
+            <Text style={[styles.archiveText, styles.actionText]}>Delete</Text>
           </TouchableOpacity>
         ) : (
           <>
-            <TouchableOpacity onPress={() => onStartEdit(item.id, item.text)} style={styles.editButton}>
-              <Text style={styles.editText}>Update</Text>
+            <TouchableOpacity onPress={() => onStartEdit(item.id, item.text)} style={[styles.actionButton, styles.editButton]}>
+              <Text style={[styles.editText, styles.actionText]}>Update</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={handleComplete} style={styles.completeButton}>
-              <Text style={styles.completeText}>Complete</Text>
+            <TouchableOpacity onPress={handleComplete} style={[styles.actionButton, styles.completeButton]}>
+              <Text style={[styles.completeText, styles.actionText]}>Complete</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={handleDelete} style={styles.archiveButton}>
-              <Text style={styles.archiveText}>Delete</Text>
+            <TouchableOpacity onPress={handleDelete} style={[styles.actionButton, styles.archiveButton]}>
+              <Text style={[styles.archiveText, styles.actionText]}>Delete</Text>
             </TouchableOpacity>
           </>
         )}
@@ -126,17 +128,16 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     padding: 18,
     borderRadius: 22,
-    backgroundColor: '#111827',
+    backgroundColor: '#0d0d0d',
     marginBottom: 14,
   },
   taskCompleted: {
-    borderColor: '#ffa500',
+    borderColor: '#ff8c00',
     borderWidth: 1,
   },
   taskDeleted: {
-    backgroundColor: '#2a1a14',
-  },
-  taskDetails: {
+    backgroundColor: '#160f08',
+  },  taskDetails: {
     flex: 1,
   },
   taskText: {
@@ -176,9 +177,29 @@ const styles = StyleSheet.create({
     color: '#c0c0c0',
   },
   statusLabel: {
-    marginTop: 6,
-    fontSize: 12,
+    marginTop: 8,
+    alignSelf: 'flex-start',
+    borderRadius: 14,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    backgroundColor: 'rgba(255, 140, 0, 0.12)',
+  },
+  completedStatusLabel: {
+    backgroundColor: 'rgba(255, 140, 0, 0.16)',
+  },
+  deletedStatusLabel: {
+    backgroundColor: 'rgba(255, 101, 101, 0.15)',
+  },
+  statusLabelText: {
+    fontSize: 11,
     color: '#ffb347',
+    fontWeight: '700',
+  },
+  completedStatusLabelText: {
+    color: '#ff8c00',
+  },
+  deletedStatusLabelText: {
+    color: '#f87171',
   },
   input: {
     flex: 1,
@@ -197,60 +218,54 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
-  actionRow: {
-    flexDirection: 'row',
+  actionColumn: {
+    flexDirection: 'column',
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  actionButton: {
+    minWidth: 56,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    marginVertical: 4,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   completeButton: {
-    marginLeft: 12,
-    backgroundColor: '#38bdf8',
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    backgroundColor: '#ff8c00',
   },
   completeText: {
     color: '#101010',
     fontWeight: '700',
   },
   editButton: {
-    marginLeft: 12,
-    backgroundColor: '#f5a623',
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    backgroundColor: '#ff8c00',
   },
   editText: {
     color: '#101010',
     fontWeight: '700',
   },
   archiveButton: {
-    marginLeft: 12,
-    backgroundColor: '#ff6200',
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    backgroundColor: '#ff8c00',
   },
   archiveText: {
     color: '#101010',
     fontWeight: '700',
   },
   restoreButton: {
-    marginLeft: 12,
     backgroundColor: '#3f3f3f',
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
   },
   restoreText: {
     color: '#ffffff',
     fontWeight: '600',
   },
   deleteButton: {
-    marginLeft: 12,
     backgroundColor: '#c75000',
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+  },
+  actionText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
   deleteText: {
     color: '#ffffff',

@@ -18,29 +18,29 @@ const TaskList = memo(({
   const paginatedTasks = tasks.slice((page - 1) * pageSize, page * pageSize);
 
   const emptyStateMessages = {
-    Tasks: {
-      title: 'No active tasks',
-      subtitle: 'Create a new task to get started!',
+    Assignments: {
+      title: 'No Active Assignments',
+      subtitle: 'Create a new assignment to get started!',
       icon: '✓',
     },
     Completed: {
-      title: 'No completed tasks',
-      subtitle: 'Complete some tasks to see them here.',
-      icon: '✔️',
+      title: 'No completed assignments',
+      subtitle: 'Complete some assignments to see them here.',
+      icon: '✓',
     },
     History: {
       title: 'No history yet',
-      subtitle: 'Completed and deleted tasks appear here.',
+      subtitle: 'Completed and deleted assignments appear here.',
       icon: '📋',
     },
-    'Task Bin': {
+    'Assignment Bin': {
       title: 'Trash is empty',
-      subtitle: 'Deleted tasks can be permanently removed.',
+      subtitle: 'Deleted assignments can be permanently removed.',
       icon: '🗑️',
     },
   };
 
-  const currentState = emptyStateMessages[activeView] || emptyStateMessages.Tasks;
+  const currentState = emptyStateMessages[activeView] || emptyStateMessages.Assignments;
 
   const renderEmptyComponent = useCallback(() => (
     <View style={styles.emptyState}>
@@ -63,7 +63,8 @@ const TaskList = memo(({
           <RefreshControl
             refreshing={isRefreshing}
             onRefresh={onRefresh}
-            tintColor="#38bdf8"
+            tintColor="#ff8c00"
+            colors={["#ff8c00"]}
             progressBackgroundColor="#111827"
           />
         }
@@ -118,11 +119,12 @@ const styles = StyleSheet.create({
   emptyIcon: {
     fontSize: 64,
     marginBottom: 16,
+    color: '#ff8c00',
   },
   emptyTitle: {
     fontSize: 22,
     fontWeight: '700',
-    color: '#e2e8f0',
+    color: '#ffffff',
     marginBottom: 8,
     textAlign: 'center',
   },
@@ -182,14 +184,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#0b0b0b',
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#1f2937',
+    borderColor: '#1f1f1f',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.22,
     shadowRadius: 8,
     elevation: 6,
-  },
-  fixedPagerContainer: {
+  },  fixedPagerContainer: {
     position: 'absolute',
     left: 0,
     right: 0,
