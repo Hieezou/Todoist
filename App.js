@@ -21,6 +21,15 @@ import { impact, notification } from './utils/haptics';
 import { HapticsProvider, useHaptics } from './utils/HapticsProvider';
 import { cloudEnabled } from './firebaseConfig';
 import { getCurrentUser, signIn, signUp, signOut } from './authService';
+import { initializeNotificationSystem, sendTestNotification, checkNotificationStatus } from './utils/initNotifications';
+import {
+  sendTaskCompletionNotification,
+  scheduleNotificationAt,
+  cancelNotification,
+  sendLocalNotification,
+  getFirebaseMessagingToken,
+  storeFirebaseMessagingToken,
+} from './utils/notificationService';
 import AuthScreen from './components/AuthScreen';
 import TaskItem from './components/TaskItem';
 import TaskInput from './components/TaskInput';
@@ -141,6 +150,23 @@ export default function App() {
     };
     saveLocal();
   }, [tasks, writeFileJson, currentUser]);
+
+  // Initialize notifications on app startup
+  useEffect(() => {
+    let cleanup;
+
+    const initNotifications = async () => {
+      cleanup = await initializeNotificationSystem();
+    };
+
+    initNotifications();
+
+    return () => {
+      if (typeof cleanup === 'function') {
+        cleanup();
+      }
+    };
+  }, []);
 
   const getTasksFile = useCallback((userId) =>
     userId
@@ -436,6 +462,12 @@ export default function App() {
             </Text>
           </View>
           <ScheduleChart currentUser={currentUser} />
+          <TouchableOpacity style={styles.profileTestNotificationButton} onPress={async () => {
+            await sendTestNotification();
+            Alert.alert('Test Notification', 'Check your notifications! If you don\'t see anything, check your phone\'s notification settings.');
+          }}>
+            <Text style={styles.profileTestNotificationText}>📢 Test Notifications</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={styles.profileSignOutButton} onPress={confirmSignOut}>
             <Text style={styles.profileSignOutText}>Sign Out</Text>
           </TouchableOpacity>
@@ -815,6 +847,18 @@ const styles = StyleSheet.create({
   modalButtonText: {
     color: '#ffffff',
     fontWeight: '700',
+  },
+  profileTestNotificationButton: {
+    backgroundColor: '#38bdf8',
+    borderRadius: 18,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 16,
+  },
+  profileTestNotificationText: {
+    color: '#0f1729',
+    fontWeight: '900',
+    fontSize: 16,
   },
   profileSignOutButton: {
     backgroundColor: '#ff8c00',
