@@ -20,7 +20,7 @@ import { impact, notification } from './utils/haptics';
 import { HapticsProvider, useHaptics } from './utils/HapticsProvider';
 import { cloudEnabled } from './firebaseConfig';
 import { getCurrentUser, signIn, signUp, signOut } from './authService';
-import { initializeNotificationSystem, sendTestNotification } from './utils/initNotifications';
+import { initializeNotificationSystem } from './utils/initNotifications';
 import {
   sendTaskCompletionNotification,
   scheduleNotificationAt,
@@ -173,65 +173,6 @@ export default function App() {
       : STORAGE_FILE,
   []);
 
-  useEffect(() => {
-    if (!currentUser || initialNotificationSchedulingDone.current) return;
-    if (tasks.length === 0) {
-      initialNotificationSchedulingDone.current = true;
-      return;
-    }
-
-    const schedulePendingNotifications = async () => {
-      const updates = [];
-      for (const task of tasks) {
-        if (task.dueDate && !task.completed && !task.deleted && !task.notificationId) {
-          const notificationId = await scheduleTaskNotification(task);
-          if (notificationId) {
-            updates.push({ id: task.id, notificationId });
-          }
-        }
-      }
-
-      if (updates.length > 0) {
-        const updatedTasks = tasks.map((task) => {
-          const match = updates.find((item) => item.id === task.id);
-          return match ? { ...task, notificationId: match.notificationId } : task;
-        });
-        setTasks(updatedTasks);
-        await writeFileJson(getTasksFile(currentUser.id), updatedTasks);
-      }
-      initialNotificationSchedulingDone.current = true;
-    };
-
-    schedulePendingNotifications();
-  }, [currentUser, tasks, scheduleTaskNotification, writeFileJson, getTasksFile]);
-
-  // Cloud sync helpers
-  const saveTaskCloud = useCallback(async (task) => {
-    if (!currentUser?.id || !cloudEnabled) return;
-    try {
-      const service = await getCloudService();
-      if (!service) return;
-      await service.saveTaskToCloud(currentUser.id, task);
-      setCloudError(null);
-    } catch (error) {
-      console.error('Cloud save failed:', error);
-      setCloudError('Sync failed (will retry)');
-    }
-  }, [currentUser, getCloudService]);
-
-  const removeTaskCloud = useCallback(async (id) => {
-    if (!currentUser?.id || !cloudEnabled) return;
-    try {
-      const service = await getCloudService();
-      if (!service) return;
-      await service.deleteTaskFromCloud(id);
-      setCloudError(null);
-    } catch (error) {
-      console.error('Cloud delete failed:', error);
-      setCloudError('Sync failed (will retry)');
-    }
-  }, [currentUser, getCloudService]);
-
   const scheduleTaskNotification = useCallback(async (task) => {
     if (!task?.dueDate) return null;
     const dueDate = new Date(task.dueDate);
@@ -274,6 +215,117 @@ export default function App() {
       console.error('Failed to cancel scheduled notification:', error);
     }
   }, []);
+
+  useEffect(() => {
+    if (!currentUser || initialNotificationSchedulingDone.current) return;
+    if (tasks.length === 0) {
+      initialNotificationSchedulingDone.current = true;
+      return;
+    }
+
+    const schedulePendingNotifications = async () => {
+      const updates = [];
+      for (const task of tasks) {
+        if (task.dueDate && !task.completed && !task.deleted && !task.notificationId) {
+          const notificationId = await scheduleTaskNotification(task);
+          if (notificationId) {
+            updates.push({ id: task.id, notificationId });
+          }
+        }
+      }
+
+      if (updates.length > 0) {
+        const updatedTasks = tasks.map((task) => {
+          const match = updates.find((item) => item.id === task.id);
+          return match ? { ...task, notificationId: match.notificationId } : task;
+        });
+        setTasks(updatedTasks);
+        await writeFileJson(getTasksFile(currentUser.id), updatedTasks);
+      }
+      initialNotificationSchedulingDone.current = true;
+    };
+
+    schedulePendingNotifications();
+  }, [currentUser, tasks, scheduleTaskNotification, writeFileJson, getTasksFile]);
+
+  // Periodically check for tasks that have become overdue and notify once
+  useEffect(() => {
+    if (!currentUser) return;
+
+    let mounted = true;
+
+    const checkOverdue = async () => {
+      try {
+        const toUpdate = [];
+        for (const task of tasks) {
+          if (!task || task.completed || task.deleted || task.overdueNotified) continue;
+          if (!task.dueDate) continue;
+          const due = new Date(task.dueDate);
+          if (Number.isNaN(due.getTime())) continue;
+          if (due.getTime() <= Date.now()) {
+            try {
+              await sendLocalNotification(
+                'Task Overdue',
+                `${task.text} was due already.`,
+                'task-reminders',
+                { taskId: task.id, taskText: task.text, overdue: true }
+              );
+            } catch (err) {
+              console.error('Failed to send overdue notification:', err);
+            }
+            toUpdate.push(task.id);
+          }
+        }
+
+        if (toUpdate.length > 0 && mounted) {
+          const updatedTasks = tasks.map(t => toUpdate.includes(t.id) ? { ...t, overdueNotified: true } : t);
+          setTasks(updatedTasks);
+          try {
+            await writeFileJson(getTasksFile(currentUser.id), updatedTasks);
+          } catch (err) {
+            console.error('Failed to save overdue notification state:', err);
+          }
+        }
+      } catch (error) {
+        console.error('Overdue check failed:', error);
+      }
+    };
+
+    // Run immediately then every minute
+    checkOverdue();
+    const id = setInterval(checkOverdue, 60 * 1000);
+    return () => {
+      mounted = false;
+      clearInterval(id);
+    };
+  }, [tasks, currentUser, writeFileJson, getTasksFile]);
+
+  // Cloud sync helpers
+  const saveTaskCloud = useCallback(async (task) => {
+    if (!currentUser?.id || !cloudEnabled) return;
+    try {
+      const service = await getCloudService();
+      if (!service) return;
+      await service.saveTaskToCloud(currentUser.id, task);
+      setCloudError(null);
+    } catch (error) {
+      console.error('Cloud save failed:', error);
+      setCloudError('Sync failed (will retry)');
+    }
+  }, [currentUser, getCloudService]);
+
+  const removeTaskCloud = useCallback(async (id) => {
+    if (!currentUser?.id || !cloudEnabled) return;
+    try {
+      const service = await getCloudService();
+      if (!service) return;
+      await service.deleteTaskFromCloud(id);
+      setCloudError(null);
+    } catch (error) {
+      console.error('Cloud delete failed:', error);
+      setCloudError('Sync failed (will retry)');
+    }
+  }, [currentUser, getCloudService]);
 
   // Pull-to-refresh handler
   const handleRefresh = useCallback(async () => {
@@ -321,6 +373,7 @@ export default function App() {
       completed: false,
       deleted: false,
       history: false,
+      overdueNotified: false,
       dueDate: dueDateValue ? dueDateValue.toISOString() : null,
       notificationId: null,
       priority: 'medium',
@@ -405,6 +458,7 @@ export default function App() {
       history: true,
       deletedAt: null,
       notificationId,
+      overdueNotified: false,
     };
 
     setTasks(prev => prev.map(task => (task.id === id ? updatedTask : task)));
@@ -457,6 +511,7 @@ export default function App() {
       text: trimmed,
       updatedAt: new Date().toISOString(),
       notificationId: null,
+      overdueNotified: false,
     };
 
     if (updatedTask.dueDate) {
@@ -576,12 +631,6 @@ export default function App() {
             </Text>
           </View>
           <ScheduleChart currentUser={currentUser} />
-          <TouchableOpacity style={styles.profileTestNotificationButton} onPress={async () => {
-            await sendTestNotification();
-            Alert.alert('Test Notification', 'Check your notifications! If you don\'t see anything, check your phone\'s notification settings.');
-          }}>
-            <Text style={styles.profileTestNotificationText}>📢 Test Notifications</Text>
-          </TouchableOpacity>
           <TouchableOpacity style={styles.profileSignOutButton} onPress={confirmSignOut}>
             <Text style={styles.profileSignOutText}>Sign Out</Text>
           </TouchableOpacity>
@@ -961,18 +1010,6 @@ const styles = StyleSheet.create({
   modalButtonText: {
     color: '#ffffff',
     fontWeight: '700',
-  },
-  profileTestNotificationButton: {
-    backgroundColor: '#38bdf8',
-    borderRadius: 18,
-    paddingVertical: 14,
-    alignItems: 'center',
-    marginTop: 16,
-  },
-  profileTestNotificationText: {
-    color: '#0f1729',
-    fontWeight: '900',
-    fontSize: 16,
   },
   profileSignOutButton: {
     backgroundColor: '#ff8c00',
