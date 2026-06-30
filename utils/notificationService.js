@@ -4,13 +4,12 @@ import { firebaseConfig, cloudEnabled } from '../firebaseConfig';
 
 let messaging = null;
 
-// Firebase messaging is only available on web
-// For native platforms (iOS/Android), we use expo-notifications
+// Firebase messaging is only available on web if cloud sync is enabled.
+// We keep this lazy setup for potential future Firebase push messaging.
 if (cloudEnabled && Platform.OS === 'web' && typeof window !== 'undefined') {
   try {
-    // Lazy load Firebase for web only
-    import('firebase/app').then(({ initializeApp }) => {
-      import('firebase/messaging/compat').then(({ getMessaging }) => {
+    import('firebase/compat/app').then(({ initializeApp }) => {
+      import('firebase/compat/messaging').then(({ getMessaging }) => {
         const app = initializeApp(firebaseConfig);
         messaging = getMessaging(app);
         console.log('✓ Firebase Messaging initialized');
@@ -77,17 +76,22 @@ export const initializeNotifications = async () => {
  */
 export const requestNotificationPermissions = async () => {
   try {
-    const { status } = await Notifications.requestPermissionsAsync();
+    if (Platform.OS === 'android') {
+      console.log('Android notification permissions skipped in Expo Go');
+      return true;
+    }
+
+    const result = await Notifications.requestPermissionsAsync();
+    const status = result.status || (result.granted ? 'granted' : 'denied');
     console.log('Notification permission status:', status);
     if (status === 'granted') {
       console.log('✓ Notifications enabled successfully');
       return true;
-    } else {
-      console.warn('⚠️ Notification permission denied or not available. Status:', status);
-      return false;
     }
+    console.warn('⚠️ Notification permission denied or not available. Status:', status);
+    return false;
   } catch (error) {
-    console.error('❌ Error requesting notification permissions:', error.message);
+    console.error('❌ Error requesting notification permissions:', error?.message || error);
     return false;
   }
 };
@@ -188,18 +192,6 @@ export const scheduleNotificationAt = async (
  * Send task reminder notification
  * @param {object} task - Task object with id, title, dueDate properties
  */
-export const sendTaskReminderNotification = async (task) => {
-  const title = 'Task Reminder';
-  const body = `Don't forget: ${task.title}`;
-  const data = {
-    taskId: task.id,
-    taskTitle: task.title,
-    type: 'task-reminder',
-  };
-
-  await sendLocalNotification(title, body, 'task-reminders', data);
-};
-
 /**
  * Send task completion notification
  * @param {string} taskTitle - Title of completed task
@@ -213,22 +205,6 @@ export const sendTaskCompletionNotification = async (taskTitle) => {
 };
 
 /**
- * Send urgent task alert
- * @param {object} task - Task object
- */
-export const sendUrgentTaskAlert = async (task) => {
-  const title = '⚠️ Urgent: Task Due Soon';
-  const body = `${task.title} is due very soon!`;
-  const data = {
-    taskId: task.id,
-    taskTitle: task.title,
-    type: 'urgent-alert',
-  };
-
-  await sendLocalNotification(title, body, 'task-reminders', data);
-};
-
-/**
  * Cancel a scheduled notification
  * @param {string} notificationId - ID of notification to cancel
  */
@@ -237,63 +213,6 @@ export const cancelNotification = async (notificationId) => {
     await Notifications.cancelScheduledNotificationAsync(notificationId);
   } catch (error) {
     console.error('Error canceling notification:', error);
-  }
-};
-
-/**
- * Cancel all scheduled notifications
- */
-export const cancelAllNotifications = async () => {
-  try {
-    await Notifications.cancelAllScheduledNotificationsAsync();
-  } catch (error) {
-    console.error('Error canceling all notifications:', error);
-  }
-};
-
-/**
- * Get Firebase Cloud Messaging token for push notifications
- * @returns {Promise<string|null>} FCM token or null if unavailable
- */
-export const getFirebaseMessagingToken = async () => {
-  if (!cloudEnabled || Platform.OS !== 'web') {
-    return null;
-  }
-
-  try {
-    const { getMessaging } = await import('firebase/messaging/compat');
-    const token = await getMessaging(messaging).getToken({
-      vapidKey: 'BJKtfIYO-qJlMfXZHJAm0LSjr2rBLcXP8t0V-7Xw7v8B_f5bqsqxWyX9xGo1Qg6xJ8y5pL7g5h4i9j2k1m2n3',
-    });
-    console.log('✓ FCM token obtained:', token.substring(0, 20) + '...');
-    return token;
-  } catch (error) {
-    console.warn('FCM token unavailable:', error.message);
-    return null;
-  }
-};
-
-/**
- * Store FCM token in Firestore for the current user
- * @param {string} userId - User ID
- * @param {string} token - FCM token
- */
-export const storeFirebaseMessagingToken = async (userId, token) => {
-  if (!cloudEnabled || !token || Platform.OS !== 'web') return;
-
-  try {
-    const { getFirestore } = await import('firebase/firestore');
-    const { doc, setDoc } = await import('firebase/firestore');
-    const db = getFirestore();
-    const userTokenRef = doc(db, 'users', userId, 'devices', 'messaging-token');
-    await setDoc(userTokenRef, {
-      token,
-      platform: Platform.OS,
-      updatedAt: new Date().toISOString(),
-    }, { merge: true });
-    console.log('✓ FCM token stored in Firestore');
-  } catch (error) {
-    console.warn('Error storing FCM token:', error.message);
   }
 };
 
@@ -363,17 +282,4 @@ export const setupNotificationListeners = () => {
     foregroundSubscription.remove();
     responseSubscription.remove();
   };
-};
-
-/**
- * Get all scheduled notifications
- */
-export const getAllScheduledNotifications = async () => {
-  try {
-    const notifications = await Notifications.getAllScheduledNotificationsAsync();
-    return notifications;
-  } catch (error) {
-    console.error('Error getting scheduled notifications:', error);
-    return [];
-  }
 };

@@ -1,10 +1,10 @@
+import { Platform } from 'react-native';
 import {
   initializeNotifications,
   requestNotificationPermissions,
   setupNotificationListeners,
   setupFirebaseMessaging,
   sendLocalNotification,
-  getAllScheduledNotifications,
 } from './notificationService';
 
 /**
@@ -23,22 +23,6 @@ export const sendTestNotification = async () => {
     console.log('✓ Test notification sent successfully');
   } catch (error) {
     console.error('❌ Failed to send test notification:', error.message);
-  }
-};
-
-/**
- * Check notification status and permissions
- */
-export const checkNotificationStatus = async () => {
-  try {
-    console.log('🔍 Checking notification status...');
-    const scheduled = await getAllScheduledNotifications();
-    console.log(`  • Scheduled notifications: ${scheduled.length}`);
-    console.log('✓ Notification status checked');
-    return { scheduledCount: scheduled.length };
-  } catch (error) {
-    console.error('❌ Failed to check notification status:', error.message);
-    return null;
   }
 };
 
@@ -63,8 +47,11 @@ export const initializeNotificationSystem = async () => {
     await initializeNotifications();
     console.log('✓ Notification channels configured');
 
-    // Request permissions from user
-    const permissionGranted = await requestNotificationPermissions();
+    // Request permissions from user on non-Android platforms
+    let permissionGranted = true;
+    if (Platform.OS !== 'android') {
+      permissionGranted = await requestNotificationPermissions();
+    }
     if (permissionGranted) {
       console.log('✓ Notification permissions granted');
     } else {

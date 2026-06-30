@@ -4,7 +4,6 @@ import {
   SafeAreaView,
   View,
   Text,
-  TextInput,
   ActivityIndicator,
   KeyboardAvoidingView,
   TouchableWithoutFeedback,
@@ -21,14 +20,12 @@ import { impact, notification } from './utils/haptics';
 import { HapticsProvider, useHaptics } from './utils/HapticsProvider';
 import { cloudEnabled } from './firebaseConfig';
 import { getCurrentUser, signIn, signUp, signOut } from './authService';
-import { initializeNotificationSystem, sendTestNotification, checkNotificationStatus } from './utils/initNotifications';
+import { initializeNotificationSystem, sendTestNotification } from './utils/initNotifications';
 import {
   sendTaskCompletionNotification,
   scheduleNotificationAt,
   cancelNotification,
   sendLocalNotification,
-  getFirebaseMessagingToken,
-  storeFirebaseMessagingToken,
 } from './utils/notificationService';
 import AuthScreen from './components/AuthScreen';
 import TaskItem from './components/TaskItem';
@@ -151,6 +148,8 @@ export default function App() {
     saveLocal();
   }, [tasks, writeFileJson, currentUser]);
 
+  const initialNotificationSchedulingDone = useRef(false);
+
   // Initialize notifications on app startup
   useEffect(() => {
     let cleanup;
@@ -173,6 +172,38 @@ export default function App() {
       ? `${FileSystem.documentDirectory}todoist_assignments_${userId}.json`
       : STORAGE_FILE,
   []);
+
+  useEffect(() => {
+    if (!currentUser || initialNotificationSchedulingDone.current) return;
+    if (tasks.length === 0) {
+      initialNotificationSchedulingDone.current = true;
+      return;
+    }
+
+    const schedulePendingNotifications = async () => {
+      const updates = [];
+      for (const task of tasks) {
+        if (task.dueDate && !task.completed && !task.deleted && !task.notificationId) {
+          const notificationId = await scheduleTaskNotification(task);
+          if (notificationId) {
+            updates.push({ id: task.id, notificationId });
+          }
+        }
+      }
+
+      if (updates.length > 0) {
+        const updatedTasks = tasks.map((task) => {
+          const match = updates.find((item) => item.id === task.id);
+          return match ? { ...task, notificationId: match.notificationId } : task;
+        });
+        setTasks(updatedTasks);
+        await writeFileJson(getTasksFile(currentUser.id), updatedTasks);
+      }
+      initialNotificationSchedulingDone.current = true;
+    };
+
+    schedulePendingNotifications();
+  }, [currentUser, tasks, scheduleTaskNotification, writeFileJson, getTasksFile]);
 
   // Cloud sync helpers
   const saveTaskCloud = useCallback(async (task) => {
@@ -200,6 +231,49 @@ export default function App() {
       setCloudError('Sync failed (will retry)');
     }
   }, [currentUser, getCloudService]);
+
+  const scheduleTaskNotification = useCallback(async (task) => {
+    if (!task?.dueDate) return null;
+    const dueDate = new Date(task.dueDate);
+    if (Number.isNaN(dueDate.getTime())) return null;
+
+    if (dueDate.getTime() <= Date.now()) {
+      try {
+        await sendLocalNotification(
+          'Task Overdue',
+          `${task.text} was due already.`,
+          'task-reminders',
+          { taskId: task.id, taskText: task.text, overdue: true }
+        );
+      } catch (error) {
+        console.error('Failed to send overdue notification:', error);
+      }
+      return null;
+    }
+
+    try {
+      const notificationId = await scheduleNotificationAt(
+        dueDate,
+        'Task Due',
+        `${task.text} is due now.`,
+        'task-reminders',
+        { taskId: task.id, taskText: task.text }
+      );
+      return notificationId;
+    } catch (error) {
+      console.error('Failed to schedule task reminder:', error);
+      return null;
+    }
+  }, []);
+
+  const cancelTaskNotification = useCallback(async (notificationId) => {
+    if (!notificationId) return;
+    try {
+      await cancelNotification(notificationId);
+    } catch (error) {
+      console.error('Failed to cancel scheduled notification:', error);
+    }
+  }, []);
 
   // Pull-to-refresh handler
   const handleRefresh = useCallback(async () => {
@@ -248,6 +322,7 @@ export default function App() {
       deleted: false,
       history: false,
       dueDate: dueDateValue ? dueDateValue.toISOString() : null,
+      notificationId: null,
       priority: 'medium',
       createdAt: new Date().toISOString(),
       updatedAt: null,
@@ -257,12 +332,24 @@ export default function App() {
 
     setTasks(prev => [newTask, ...prev]);
     setTaskText('');
-    await saveTaskCloud(newTask);
-  }, [taskText, saveTaskCloud]);
 
-  const completeTask = useCallback((id) => {
+    let taskToSave = newTask;
+    if (dueDateValue && dueDateValue.getTime() > Date.now()) {
+      const notificationId = await scheduleTaskNotification(newTask);
+      if (notificationId) {
+        taskToSave = { ...newTask, notificationId };
+        setTasks(prev => prev.map(task => (task.id === newTask.id ? taskToSave : task)));
+      }
+    }
+
+    await saveTaskCloud(taskToSave);
+  }, [taskText, saveTaskCloud, scheduleTaskNotification]);
+
+  const completeTask = useCallback(async (id) => {
     const taskToUpdate = tasks.find(task => task.id === id);
     if (!taskToUpdate) return;
+
+    await cancelTaskNotification(taskToUpdate.notificationId);
 
     const updatedTask = {
       ...taskToUpdate,
@@ -271,41 +358,58 @@ export default function App() {
       history: true,
       completedAt: new Date().toISOString(),
       deletedAt: null,
+      notificationId: null,
     };
 
     setTasks(prev => prev.map(task => (task.id === id ? updatedTask : task)));
-    saveTaskCloud(updatedTask);
-  }, [tasks, saveTaskCloud]);
 
-  const deleteToBin = useCallback((id) => {
+    try {
+      await sendTaskCompletionNotification(taskToUpdate.text);
+    } catch (error) {
+      console.error('Failed to send completion notification:', error);
+    }
+
+    saveTaskCloud(updatedTask);
+  }, [tasks, saveTaskCloud, cancelTaskNotification, sendTaskCompletionNotification]);
+
+  const deleteToBin = useCallback(async (id) => {
     const taskToUpdate = tasks.find(task => task.id === id);
     if (!taskToUpdate) return;
+
+    await cancelTaskNotification(taskToUpdate.notificationId);
 
     const updatedTask = {
       ...taskToUpdate,
       deleted: true,
       history: true,
       deletedAt: new Date().toISOString(),
+      notificationId: null,
     };
 
     setTasks(prev => prev.map(task => (task.id === id ? updatedTask : task)));
     saveTaskCloud(updatedTask);
-  }, [tasks, saveTaskCloud]);
+  }, [tasks, saveTaskCloud, cancelTaskNotification]);
 
-  const restoreFromBin = useCallback((id) => {
+  const restoreFromBin = useCallback(async (id) => {
     const taskToUpdate = tasks.find(task => task.id === id);
     if (!taskToUpdate) return;
+
+    let notificationId = null;
+    if (taskToUpdate.dueDate) {
+      notificationId = await scheduleTaskNotification(taskToUpdate);
+    }
 
     const updatedTask = {
       ...taskToUpdate,
       deleted: false,
       history: true,
       deletedAt: null,
+      notificationId,
     };
 
     setTasks(prev => prev.map(task => (task.id === id ? updatedTask : task)));
     saveTaskCloud(updatedTask);
-  }, [tasks, saveTaskCloud]);
+  }, [tasks, saveTaskCloud, scheduleTaskNotification]);
 
   const permanentlyDeleteTask = useCallback((id) => {
     Alert.alert(
@@ -336,7 +440,7 @@ export default function App() {
     setEditingText('');
   }, []);
 
-  const saveTaskEdit = useCallback((id) => {
+  const saveTaskEdit = useCallback(async (id) => {
     const trimmed = editingText.trim();
     if (!trimmed) {
       Alert.alert('Error', 'Assignment text cannot be empty');
@@ -346,16 +450,26 @@ export default function App() {
     const taskToUpdate = tasks.find(task => task.id === id);
     if (!taskToUpdate) return;
 
+    await cancelTaskNotification(taskToUpdate.notificationId);
+
     const updatedTask = {
       ...taskToUpdate,
       text: trimmed,
       updatedAt: new Date().toISOString(),
+      notificationId: null,
     };
+
+    if (updatedTask.dueDate) {
+      const newNotificationId = await scheduleTaskNotification(updatedTask);
+      if (newNotificationId) {
+        updatedTask.notificationId = newNotificationId;
+      }
+    }
 
     setTasks(prev => prev.map(task => (task.id === id ? updatedTask : task)));
     saveTaskCloud(updatedTask);
     cancelEditing();
-  }, [editingText, tasks, saveTaskCloud, cancelEditing]);
+  }, [editingText, tasks, saveTaskCloud, cancelTaskNotification, scheduleTaskNotification, cancelEditing]);
 
   // Computed values with memoization
   const { activeTasks, completedTasks, historyTasks, binTasks } = useMemo(() => ({
